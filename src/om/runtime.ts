@@ -83,6 +83,12 @@ export class Runtime {
 	compactionStats: { summarized: number; kept: number; keptTokensEst: number } | null = null;
 	/** Whether the most recent compaction was triggered by /blackhole (vs auto-compact). */
 	compactWasPiVcc = false;
+	/** True when the most recent session_before_compact returned { cancel: true } from
+	 *  blackhole's own-cut guards. Set immediately before the cancel return and reset
+	 *  at the start of every session_before_compact; consumed by the
+	 *  session_compact_failed handler to attribute aborted compactions that pi
+	 *  mislabels as fromExtension: false (pi only flags content-bearing compactions). */
+	lastCompactCancelled = false;
 	/** In‑memory pipeline cursors — authoritative copy for gating decisions. */
 	cursors: PipelineCursors = {};
 	/** Session ID for which cursors have been loaded/validated.  Undefined until first load. */

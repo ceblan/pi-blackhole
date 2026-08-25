@@ -241,6 +241,10 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI, omRuntime: Runtime) 
   pi.on("session_before_compact", (event, ctx) => {
     const { preparation, branchEntries, customInstructions } = event;
     omRuntime.ensureConfig(ctx.cwd ?? process.cwd());
+    // Reset the cancellation flag for this compaction attempt — set again only
+    // if we return { cancel: true } below. Consumed by the session_compact_failed
+    // handler for attribution (pi mislabels hook cancels as fromExtension: false).
+    omRuntime.lastCompactCancelled = false;
     const trace = (ev: string, d?: Record<string, unknown>) => debugLog(ev, d, omRuntime.config.debugLog === true);
 
     trace("before_compact.enter", {
@@ -284,6 +288,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI, omRuntime: Runtime) 
 
       if (omRuntime.config.noAutoCompact && !isPiVcc) {
         trace("before_compact.cancel", { reason: "noAutoCompact and not /blackhole" });
+        omRuntime.lastCompactCancelled = true;
         return { cancel: true };
       }
     }
@@ -370,6 +375,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI, omRuntime: Runtime) 
       try {
         ctx?.ui?.notify?.(REASON_MESSAGES[ownCut.reason], "warning");
       } catch {}
+      omRuntime.lastCompactCancelled = true;
       return { cancel: true };
     }
 

@@ -22,3 +22,6 @@ docs/
 .pi/skills/*
 !.pi/skills/lockstep/
 AGENTS.md
+/.pi/hindsight.json
+/.pi/hindsight/
+/.pi/subagent-docs/

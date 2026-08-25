@@ -40,6 +40,7 @@ function notifySafely(hasUI: boolean, ui: any, message: string, level: "info" | 
 	}
 }
 
+// @lat: [[observational-memory#Compaction trigger#Compact-failure handling]]
 export function registerCompactFailedHook(pi: ExtensionAPI, runtime: Runtime): void {
 	// `session_compact_failed` ships in pi >= 0.84.3; our dev-time types pin an
 	// older version, so register through a widened signature. On older pi the
@@ -81,17 +82,21 @@ function handleCompactFailed(event: any, ctx: any, runtime: Runtime): void {
 	// Attribution fix (upstream quirk): pi only sets fromExtension when the
 	// failing compaction carried extension content, so `{ cancel: true }` returns
 	// from our session_before_compact hook are mislabeled `fromExtension: false`.
-	// Our own flags tell the truth.
-	const attributedFromExtension =
-		fromExtension || runtime.compactWasPiVcc === true || runtime.lastCompactCancelled === true;
+	// Capture and consume our attempt-scoped flags before notifications or other
+	// side effects can throw; the next before-compact event establishes new state.
+	const compactWasPiVcc = runtime.compactWasPiVcc === true;
+	const lastCompactCancelled = runtime.lastCompactCancelled === true;
+	const attributedFromExtension = fromExtension || compactWasPiVcc || lastCompactCancelled;
+	runtime.compactWasPiVcc = false;
+	runtime.lastCompactCancelled = false;
 
 	trace("compact_failed.received", {
 		reason,
 		aborted,
 		willRetry,
 		fromExtension,
-		compactWasPiVcc: runtime.compactWasPiVcc,
-		lastCompactCancelled: runtime.lastCompactCancelled,
+		compactWasPiVcc,
+		lastCompactCancelled,
 		attributedFromExtension,
 		errorMessage,
 		sessionId,
@@ -99,12 +104,20 @@ function handleCompactFailed(event: any, ctx: any, runtime: Runtime): void {
 
 	// Defensive compactInFlight guard: pi may abort an in-flight compact through
 	// a path that never reaches our onError callbacks (overflow pre-emption,
-	// session replacement). Reset our in-flight state so the next agent_end can
-	// re-evaluate the threshold and schedule a fresh compaction.
-	if ((aborted || errorMessage) && (runtime.compactInFlight || runtime.autoCompactionController)) {
+	// session replacement). Abort a pending idle-wait controller before dropping
+	// its runtime reference; otherwise its captured signal stays live and can
+	// launch a second compaction after a later agent_start/agent_end cycle.
+	const pendingController = runtime.autoCompactionController;
+	if ((aborted || errorMessage) && (runtime.compactInFlight || pendingController)) {
+		pendingController?.abort();
 		runtime.compactInFlight = false;
-		runtime.autoCompactionController = null;
-		trace("compact_failed.compactInFlight_reset", { reason });
+		if (runtime.autoCompactionController === pendingController) {
+			runtime.autoCompactionController = null;
+		}
+		trace("compact_failed.compactInFlight_reset", {
+			reason,
+			abortedPendingWait: pendingController !== null,
+		});
 	}
 
 	// Overflow-retry visibility: pi aborts the turn's compaction and retries the
@@ -117,7 +130,6 @@ function handleCompactFailed(event: any, ctx: any, runtime: Runtime): void {
 	// pi's engine (unless the content or the trigger was ours) — light trace only.
 	if (runtime.config.compactionEngine === "pi-default" && !attributedFromExtension) {
 		trace("compact_failed.skipped_pi_default", { reason });
-		runtime.lastCompactCancelled = false;
 		return;
 	}
 
@@ -127,7 +139,4 @@ function handleCompactFailed(event: any, ctx: any, runtime: Runtime): void {
 	if (!aborted && errorMessage && attributedFromExtension) {
 		notifySafely(hasUI, ui, `blackhole: compaction failed — ${errorMessage}`, "error");
 	}
-
-	// Consume the cancellation flag — the compaction attempt it described is done.
-	runtime.lastCompactCancelled = false;
 }

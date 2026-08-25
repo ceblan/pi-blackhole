@@ -280,6 +280,7 @@ After threshold is reached, the trigger waits for the agent to become truly idle
 
 - Polls `ctx.isIdle()` every 200ms (50ms slices for responsiveness)
 - `agent_start` aborts pending wait (new turn starting)
+- `session_compact_failed` aborts any pending wait before clearing its controller reference
 - Session identity validation — bails if session changed (replaced/reloaded)
 - Re-checks token threshold after idle (pressure may have been relieved by another compaction)
 
@@ -296,7 +297,7 @@ The `session_compact_failed` event (pi ≥ 0.84.3) gets unified handling in [[sr
 Before this hook, failure coverage was fragmented: `/blackhole` and the auto-trigger had their own `onError` callbacks, but overflow compaction failures (pi-initiated, mid-turn) were invisible, `/compact` cancelled by our guards was only notified inside the hook, and overflow aborts with retry had no visibility at all. The handler does four things:
 
 1. **Structured trace log** — `compact_failed.received` records reason, aborted, willRetry, fromExtension, errorMessage, and session id.
-2. **Defensive `compactInFlight` guard** — on abort or error, resets `compactInFlight` and `autoCompactionController`, covering abort paths that never invoke our `onError` callbacks (overflow pre-emption, session replacement).
+2. **Defensive `compactInFlight` guard** — on abort or error, aborts any pending idle-wait controller before clearing its reference, then resets `compactInFlight`. This prevents an orphaned wait from launching a second compaction after a later turn.
 3. **Overflow-retry visibility** — `reason: "overflow"` + `aborted` + `willRetry` notifies `"blackhole: overflow compaction aborted, retrying turn"` (info).
 4. **pi-default noise filter** — failures under `compactionEngine: "pi-default"` that are not ours get only a light `compact_failed.skipped_pi_default` trace; error notifications fire only for failures attributed to blackhole.
 
@@ -304,7 +305,7 @@ Before this hook, failure coverage was fragmented: `/blackhole` and the auto-tri
 
 Upstream only sets `fromExtension: true` for content-bearing compactions, so hook `{ cancel: true }` returns are mislabeled false; the handler derives the true origin instead.
 
-The derived field is `attributedFromExtension = fromExtension || compactWasPiVcc || lastCompactCancelled`. `lastCompactCancelled` is set on `Runtime` immediately before every `{ cancel: true }` return in `src/hooks/before-compact.ts`, reset at the start of each `session_before_compact`, and consumed (reset) after the `session_compact_failed` event is handled — so our logs and notification decisions reflect the true origin.
+The derived field is `attributedFromExtension = fromExtension || compactWasPiVcc || lastCompactCancelled`. Both runtime flags are attempt-scoped: each `session_before_compact` overwrites them, success consumes `compactWasPiVcc`, and failure captures then clears both before side effects. This prevents `/blackhole` attribution from leaking into later pi-default failures.
 
 ## Manual mode
 

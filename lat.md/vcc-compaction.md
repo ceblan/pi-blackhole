@@ -177,7 +177,7 @@ The `buildOwnCut()` function determines which messages to compile:
 
 Every `{ cancel: true }` return (own-cut guards, legacy `noAutoCompact`) sets `runtime.lastCompactCancelled = true` so the failure handler can attribute the aborted compaction.
 
-The flag is reset at the start of each `session_before_compact` and consumed by the `session_compact_failed` handler. This attributes aborted compactions that pi mislabels as `fromExtension: false` — see [[observational-memory#Compaction trigger#Compact-failure handling]].
+At the start of each attempt, `lastCompactCancelled` resets and `compactWasPiVcc` is overwritten from the `/blackhole` marker. Success consumes the origin marker; failure captures and clears both flags. This attributes hook cancellations correctly without leaking `/blackhole` state into later pi-default attempts — see [[observational-memory#Compaction trigger#Compact-failure handling]].
 
 ### OM injection
 

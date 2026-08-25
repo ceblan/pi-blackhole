@@ -1,13 +1,13 @@
 /**
  * Tests for the session_compact_failed hook (src/hooks/compact-failed.ts).
  *
- * Covers: handler registration, compactInFlight reset on abort/error,
- * overflow-retry visibility, pi-default noise filtering, error notification
- * gating on attribution, and the fromExtension attribution fix (upstream pi
- * only flags content-bearing compactions, so hook { cancel: true } returns are
+ * Covers: handler registration, pending-controller abort and compactInFlight
+ * reset on abort/error, overflow-retry visibility, pi-default noise filtering,
+ * error notification gating, and attempt-scoped attribution (upstream pi only
+ * flags content-bearing compactions, so hook { cancel: true } returns are
  * mislabeled — we correct via compactWasPiVcc / lastCompactCancelled).
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../src/om/debug-log.js", () => ({
 	debugLog: vi.fn(),
@@ -15,7 +15,8 @@ vi.mock("../src/om/debug-log.js", () => ({
 
 import { debugLog } from "../src/om/debug-log.js";
 import { registerCompactFailedHook } from "../src/hooks/compact-failed.js";
-import { registerBeforeCompactHook } from "../src/hooks/before-compact.js";
+import { PI_VCC_COMPACT_INSTRUCTION, registerBeforeCompactHook } from "../src/hooks/before-compact.js";
+import { registerCompactionTrigger } from "../src/om/compaction-trigger.js";
 
 function traceEvents(): string[] {
 	return (vi.mocked(debugLog).mock.calls as unknown as [string][]).map((c) => c[0]);
@@ -95,15 +96,19 @@ describe("compact-failed hook", () => {
 		expect(pi.on).toHaveBeenCalledWith("session_compact_failed", expect.any(Function));
 	});
 
-	it("resets compactInFlight and the controller on abort", () => {
+	it("aborts the pending controller before resetting compactInFlight", () => {
 		const { handler, runtime } = captureHandler({ compactInFlight: true });
 		const ctx = fakeCtx();
+		const pendingController = runtime.autoCompactionController;
 
 		handler(failedEvent({ reason: "manual", aborted: true }), ctx);
 
+		expect(pendingController?.signal.aborted).toBe(true);
 		expect(runtime.compactInFlight).toBe(false);
 		expect(runtime.autoCompactionController).toBeNull();
-		expect(traceEvents()).toContain("compact_failed.compactInFlight_reset");
+		expect(traceData("compact_failed.compactInFlight_reset")).toMatchObject({
+			abortedPendingWait: true,
+		});
 	});
 
 	it("resets compactInFlight on non-abort errors", () => {
@@ -181,14 +186,14 @@ describe("compact-failed hook", () => {
 		expect(ctx.ui.notify).not.toHaveBeenCalled();
 	});
 
-	it("attributes failures to blackhole when compactWasPiVcc is true despite fromExtension false", () => {
-		const { handler } = captureHandler({ compactionEngine: "pi-default", compactWasPiVcc: true });
+	it("attributes the current /blackhole failure and consumes compactWasPiVcc", () => {
+		const { handler, runtime } = captureHandler({ compactionEngine: "pi-default", compactWasPiVcc: true });
 		const ctx = fakeCtx();
 
 		handler(failedEvent({ reason: "manual", errorMessage: "boom", fromExtension: false }), ctx);
 
-		// compactWasPiVcc means the failure is ours: not skipped, error surfaced,
-		// and the trace records the corrected attribution.
+		// compactWasPiVcc means the current failure is ours: not skipped, error
+		// surfaced, and the attempt marker consumed before a later failure arrives.
 		expect(traceEvents()).not.toContain("compact_failed.skipped_pi_default");
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
 			"blackhole: compaction failed — boom",
@@ -199,6 +204,7 @@ describe("compact-failed hook", () => {
 			compactWasPiVcc: true,
 			attributedFromExtension: true,
 		});
+		expect(runtime.compactWasPiVcc).toBe(false);
 	});
 
 	it("attributes aborted compactions cancelled by our hook (lastCompactCancelled)", () => {
@@ -241,9 +247,13 @@ describe("compact-failed attribution × before-compact hook", () => {
 
 	function captureBeforeCompact() {
 		let handler: ((event: any, ctx: any) => any) | undefined;
+		let compactHandler: ((event: any, ctx: any) => void) | undefined;
+		let failedHandler: ((event: FailedEvent, ctx: any) => void) | undefined;
 		const pi = {
 			on: vi.fn((name: string, cb: any) => {
 				if (name === "session_before_compact") handler = cb;
+				if (name === "session_compact") compactHandler = cb;
+				if (name === "session_compact_failed") failedHandler = cb;
 			}),
 		};
 		const runtime = {
@@ -254,20 +264,26 @@ describe("compact-failed attribution × before-compact hook", () => {
 				overrideDefaultCompaction: true,
 				noAutoCompact: false,
 				memory: true,
+				debugLog: false,
 			},
+			compactInFlight: false,
+			autoCompactionController: null,
 			lastCompactCancelled: false,
 			compactWasPiVcc: false,
 			compactionStats: null,
 		};
 		registerBeforeCompactHook(pi as any, runtime as any);
+		registerCompactFailedHook(pi as any, runtime as any);
 		if (!handler) throw new Error("session_before_compact handler was not registered");
-		return { handler: handler!, runtime };
+		if (!compactHandler) throw new Error("session_compact handler was not registered");
+		if (!failedHandler) throw new Error("session_compact_failed handler was not registered");
+		return { handler: handler!, compactHandler: compactHandler!, failedHandler: failedHandler!, runtime };
 	}
 
-	function makeEvent(branchEntries: any[]) {
+	function makeEvent(branchEntries: any[], customInstructions?: string) {
 		return {
 			type: "session_before_compact",
-			customInstructions: undefined,
+			customInstructions,
 			branchEntries,
 			preparation: {
 				previousSummary: undefined,
@@ -312,5 +328,115 @@ describe("compact-failed attribution × before-compact hook", () => {
 
 		expect(result?.compaction).toBeTruthy();
 		expect(runtime.lastCompactCancelled).toBe(false);
+	});
+
+	it("overwrites stale /blackhole attribution before a pi-default attempt", () => {
+		const { handler, failedHandler, runtime } = captureBeforeCompact();
+		const ctx = fakeCtx2();
+		runtime.compactWasPiVcc = true;
+		runtime.config.compactionEngine = "pi-default";
+		const branch = [
+			{ id: "e1", type: "message", message: { role: "user", content: "first question" } },
+			{ id: "e2", type: "message", message: { role: "assistant", content: "first answer" } },
+			{ id: "e3", type: "message", message: { role: "user", content: "second question" } },
+		];
+
+		expect(handler(makeEvent(branch), ctx)).toBeUndefined();
+		expect(runtime.compactWasPiVcc).toBe(false);
+
+		failedHandler(failedEvent({ reason: "threshold", errorMessage: "provider 500" }), ctx);
+
+		expect(traceEvents()).toContain("compact_failed.skipped_pi_default");
+		expect(ctx.ui.notify).not.toHaveBeenCalled();
+	});
+
+	it("consumes /blackhole attribution after a successful compaction", () => {
+		const { handler, compactHandler, runtime } = captureBeforeCompact();
+		const branch = [
+			{ id: "e1", type: "message", message: { role: "user", content: "first question" } },
+			{ id: "e2", type: "message", message: { role: "assistant", content: "first answer" } },
+			{ id: "e3", type: "message", message: { role: "user", content: "second question" } },
+		];
+
+		const result = handler(makeEvent(branch, PI_VCC_COMPACT_INSTRUCTION), fakeCtx2());
+		expect(result?.compaction).toBeTruthy();
+		expect(runtime.compactWasPiVcc).toBe(true);
+
+		compactHandler({ fromExtension: true }, fakeCtx2());
+
+		expect(runtime.compactWasPiVcc).toBe(false);
+	});
+});
+
+describe("compact-failed × pending auto-compaction", () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+		vi.mocked(debugLog).mockClear();
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it("aborts an old wait loop before a later agent_end schedules its replacement", async () => {
+		const handlers = new Map<string, Array<(event: any, ctx: any) => void>>();
+		const pi = {
+			on: vi.fn((name: string, cb: (event: any, ctx: any) => void) => {
+				const registered = handlers.get(name) ?? [];
+				registered.push(cb);
+				handlers.set(name, registered);
+			}),
+		};
+		const runtime = {
+			ensureConfig: vi.fn(),
+			config: {
+				compaction: "auto",
+				compactionEngine: "blackhole",
+				compactAfterTokens: 3,
+				debugLog: false,
+			},
+			compactInFlight: false,
+			autoCompactionController: null as AbortController | null,
+			compactWasPiVcc: false,
+			lastCompactCancelled: false,
+		};
+		registerCompactionTrigger(pi as any, runtime as any);
+		registerCompactFailedHook(pi as any, runtime as any);
+
+		const branch = [
+			{ id: "m1", type: "message", message: { role: "user", content: "aaaaaaaaaaaa" } },
+		];
+		const compact = vi.fn();
+		const ctx = {
+			cwd: "/tmp/project",
+			hasUI: false,
+			ui: undefined,
+			sessionManager: {
+				getBranch: vi.fn(() => branch),
+				getSessionId: vi.fn(() => "session-1"),
+			},
+			isIdle: vi.fn(() => true),
+			compact,
+		};
+		const agentEnd = {
+			type: "agent_end",
+			messages: [{ role: "assistant", content: "done", stopReason: "stop" }],
+		};
+
+		handlers.get("agent_end")![0](agentEnd, ctx);
+		const firstController = runtime.autoCompactionController;
+		expect(firstController).not.toBeNull();
+
+		handlers.get("session_compact_failed")![0](
+			failedEvent({ reason: "manual", aborted: true }),
+			ctx,
+		);
+		expect(firstController?.signal.aborted).toBe(true);
+
+		handlers.get("agent_start")![0]({ type: "agent_start" }, ctx);
+		handlers.get("agent_end")![0](agentEnd, ctx);
+		await vi.runAllTimersAsync();
+
+		expect(compact).toHaveBeenCalledTimes(1);
 	});
 });

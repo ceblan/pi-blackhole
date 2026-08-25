@@ -72,7 +72,7 @@ Tests for the OM runtime, worker agents, and consolidation pipeline.
 - `tests/consolidation.test.ts` — Consolidation pipeline (observer → reflector → dropper)
 - `tests/multi-cycle-compaction.test.ts` — Multi-cycle compaction behavior
 - `tests/auto-compact-permutations.test.ts` — Auto-compaction config permutations
-- `tests/compact-failed.test.ts` — `session_compact_failed` handler: registration, `compactInFlight` reset, overflow-retry notification, pi-default filter, attribution fix
+- `tests/compact-failed.test.ts` — `session_compact_failed` handler: registration, pending-controller abort/no-orphan invariant, `compactInFlight` reset, overflow-retry notification, pi-default filter, and attempt-scoped attribution lifecycle
 
 ### ledger
 

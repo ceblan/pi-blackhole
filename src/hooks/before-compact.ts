@@ -237,19 +237,22 @@ const REASON_MESSAGES: Record<OwnCutCancelReason, string> = {
   too_few_live_messages: "blackhole: Too few live messages — Pi's default logic preserves visible context. Set tailBehavior to \"minimal\" in config to force compaction with fewer messages.",
 };
 
+// @lat: [[vcc-compaction#before-compact hook#Cancellation flag]]
 export const registerBeforeCompactHook = (pi: ExtensionAPI, omRuntime: Runtime) => {
   pi.on("session_before_compact", (event, ctx) => {
     const { preparation, branchEntries, customInstructions } = event;
-    omRuntime.ensureConfig(ctx.cwd ?? process.cwd());
-    // Reset the cancellation flag for this compaction attempt — set again only
-    // if we return { cancel: true } below. Consumed by the session_compact_failed
-    // handler for attribution (pi mislabels hook cancels as fromExtension: false).
+    const isPiVcc = customInstructions === PI_VCC_COMPACT_INSTRUCTION;
+
+    // Establish attribution for this attempt before config/context access can
+    // throw. Every attempt overwrites stale state; success/failure hooks consume it.
+    omRuntime.compactWasPiVcc = isPiVcc;
     omRuntime.lastCompactCancelled = false;
+    omRuntime.ensureConfig(ctx.cwd ?? process.cwd());
     const trace = (ev: string, d?: Record<string, unknown>) => debugLog(ev, d, omRuntime.config.debugLog === true);
 
     trace("before_compact.enter", {
       customInstructions,
-      isPiVcc: customInstructions === PI_VCC_COMPACT_INSTRUCTION,
+      isPiVcc,
       overrideDefaultCompaction: omRuntime.config.overrideDefaultCompaction,
       noAutoCompact: omRuntime.config.noAutoCompact,
       branchLength: branchEntries.length,
@@ -258,7 +261,6 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI, omRuntime: Runtime) 
 
     // Always handle explicit /blackhole marker.
     // Otherwise, only handle when user opted in via settings.
-    const isPiVcc = customInstructions === PI_VCC_COMPACT_INSTRUCTION;
 
     // NEW: Unified compaction guards
     // compaction "off": blackhole skips auto-triggered, but /blackhole still uses blackhole pipeline
@@ -456,8 +458,6 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI, omRuntime: Runtime) 
       previousSummaryUsed: Boolean(preparation.previousSummary),
     };
 
-    omRuntime.compactWasPiVcc = isPiVcc;
-
     // ── Inject observational-memory content ───────────────────────────
     let omContent: string;
     let omDetails: Record<string, unknown> | undefined;
@@ -487,8 +487,10 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI, omRuntime: Runtime) 
   // Fire success toast for /compact path only (delayed to let UI settle).
   // /blackhole path uses its own onComplete callback in the command handler.
   pi.on("session_compact", (event, ctx) => {
+    const compactWasPiVcc = omRuntime.compactWasPiVcc;
+    omRuntime.compactWasPiVcc = false;
     if (!event.fromExtension) return;
-    if (omRuntime.compactWasPiVcc) return; // /blackhole handles its own toast via onComplete
+    if (compactWasPiVcc) return; // /blackhole handles its own toast via onComplete
     const stats = omRuntime.compactionStats;
     if (!stats) return;
     const sessionId = ctx.sessionManager.getSessionId();

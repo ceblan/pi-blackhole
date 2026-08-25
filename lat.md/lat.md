@@ -13,6 +13,7 @@ Links to all documentation sections covering architecture, compaction, memory, r
 - [[commands]] — Commands: /blackhole, /blackhole-memory, /blackhole-recall, provider stream bridge
 - [[config]] — Configuration: unified config, settings reference, environment overrides, migration, presets
 - [[tests]] — Test coverage inventory across all subsystems
+- [[last-commit]] — Last tracked git commit hash, author, and message for documentation sync
 
 ## Quick start
 

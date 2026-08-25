@@ -91,7 +91,7 @@ export class Runtime {
 	 *  at the start of every session_before_compact; consumed by the
 	 *  session_compact_failed handler to attribute aborted compactions that pi
 	 *  mislabels as fromExtension: false (pi only flags content-bearing compactions). */
-	lastCompactCancelled = false;
+	lastCompactCancelled = false; // @lat: [[vcc-compaction#VCC Compaction Pipeline#before-compact hook#Cancellation flag]]
 	/** In‑memory pipeline cursors — authoritative copy for gating decisions. */
 	cursors: PipelineCursors = {};
 	/** Session ID for which cursors have been loaded/validated.  Undefined until first load. */

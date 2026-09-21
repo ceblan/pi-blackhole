@@ -10,6 +10,7 @@ import type { Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { createBridgeStreamFn } from "../../provider-stream.js";
 import { streamSimple } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
+import { hostUsesInbandSystemMessage } from "../host-compat.js";
 import type { Static } from "typebox";
 import { hashId } from "../../ids.js";
 import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
@@ -135,12 +136,14 @@ export async function runReflector(args: RunReflectorArgs): Promise<Reflection[]
 	const prompts: Message[] = [{ role: "user", content: [{ type: "text", text: userText }], timestamp: Date.now() }];
 	// Dual system-prompt delivery (pi 0.86+/0.87 compatibility, upstream OM issue #82):
 	// pi 0.86+ removed AgentContext.systemPrompt and reads the prompt from a leading
-	// transcript system message; hosts <=0.85 still read the legacy property and their
-	// providers drop unknown system messages, so both paths coexist safely.
-	const systemMessage = { role: "system", content: REFLECTOR_SYSTEM, timestamp: Date.now() } as unknown as Message;
+	// transcript system message. Hosts <= 0.85 still honor the property, and their
+	// pi-ai crashes on in-band system messages with string content (see
+	// host-compat.ts), so the message is only prepended on hosts that read it.
 	const context: AgentContext = {
 		systemPrompt: REFLECTOR_SYSTEM,
-		messages: [systemMessage],
+		...(hostUsesInbandSystemMessage()
+			? { messages: [{ role: "system", content: REFLECTOR_SYSTEM, timestamp: Date.now() } as unknown as Message] }
+			: { messages: [] }),
 		tools: [recordReflections as AgentTool<any>],
 	};
 	const reasoning = (model as { reasoning?: unknown }).reasoning;

@@ -40,7 +40,7 @@ describe("V3 reflector agent", () => {
 	it("keeps core reflector prompt guidance in V3 terms", async () => {
 		let systemPrompt = "";
 		const loop = fakeAgentLoop((_prompts, context) => {
-			systemPrompt = context.messages[0]?.role === "system" ? context.messages[0].content : "";
+			systemPrompt = context.systemPrompt ?? "";
 		});
 
 		await runReflector({ ...baseArgs, agentLoop: loop });

@@ -18,6 +18,7 @@ import { OBSERVER_SYSTEM } from "./prompts.js";
 import { nowTimestamp, truncateRecordContent } from "../../serialize.js";
 import type { Observation, Relevance } from "../../ledger/index.js";
 import { estimateStringTokens } from "../../tokens.js";
+import { hostUsesInbandSystemMessage } from "../host-compat.js";
 
 interface RunObserverArgs {
 	model: Model<any>;
@@ -202,12 +203,14 @@ ${conversation}`;
 
 	// Dual system-prompt delivery (pi 0.86+/0.87 compatibility, upstream OM issue #82):
 	// pi 0.86+ removed AgentContext.systemPrompt and reads the prompt from a leading
-	// transcript system message; hosts <=0.85 still read the legacy property and their
-	// providers drop unknown system messages, so both paths coexist safely.
-	const systemMessage = { role: "system", content: OBSERVER_SYSTEM, timestamp: Date.now() } as unknown as Message;
+	// transcript system message. Hosts <= 0.85 still honor the property, and their
+	// pi-ai crashes on in-band system messages with string content (see
+	// host-compat.ts), so the message is only prepended on hosts that read it.
 	const context: AgentContext = {
 		systemPrompt: OBSERVER_SYSTEM,
-		messages: [systemMessage],
+		...(hostUsesInbandSystemMessage()
+			? { messages: [{ role: "system", content: OBSERVER_SYSTEM, timestamp: Date.now() } as unknown as Message] }
+			: { messages: [] }),
 		tools: [recordObservations as AgentTool<any>],
 	};
 

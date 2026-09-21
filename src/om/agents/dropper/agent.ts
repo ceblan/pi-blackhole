@@ -10,6 +10,7 @@ import type { Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { createBridgeStreamFn } from "../../provider-stream.js";
 import { streamSimple } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
+import { hostUsesInbandSystemMessage } from "../host-compat.js";
 import type { Static } from "typebox";
 import { debugLog } from "../../debug-log.js";
 import { AGENT_LOOP_MAX_TOKENS, boundedMaxTokens } from "../../model-budget.js";
@@ -272,12 +273,14 @@ export async function runDropper(args: RunDropperArgs): Promise<string[] | undef
 	const prompts: Message[] = [{ role: "user", content: [{ type: "text", text: userText }], timestamp: Date.now() }];
 	// Dual system-prompt delivery (pi 0.86+/0.87 compatibility, upstream OM issue #82):
 	// pi 0.86+ removed AgentContext.systemPrompt and reads the prompt from a leading
-	// transcript system message; hosts <=0.85 still read the legacy property and their
-	// providers drop unknown system messages, so both paths coexist safely.
-	const systemMessage = { role: "system", content: DROPPER_SYSTEM, timestamp: Date.now() } as unknown as Message;
+	// transcript system message. Hosts <= 0.85 still honor the property, and their
+	// pi-ai crashes on in-band system messages with string content (see
+	// host-compat.ts), so the message is only prepended on hosts that read it.
 	const context: AgentContext = {
 		systemPrompt: DROPPER_SYSTEM,
-		messages: [systemMessage],
+		...(hostUsesInbandSystemMessage()
+			? { messages: [{ role: "system", content: DROPPER_SYSTEM, timestamp: Date.now() } as unknown as Message] }
+			: { messages: [] }),
 		tools: [dropObservations as AgentTool<any>],
 	};
 	const reasoning = (model as { reasoning?: unknown }).reasoning;

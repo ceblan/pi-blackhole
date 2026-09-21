@@ -83,7 +83,7 @@ describe("V3 dropper agent", () => {
 	it("keeps core dropper safety guidance in V3 terms", async () => {
 		let systemPrompt = "";
 		const loop = fakeAgentLoop((_prompts, context) => {
-			systemPrompt = context.systemPrompt;
+			systemPrompt = context.messages[0]?.role === "system" ? context.messages[0].content : "";
 		});
 
 		await runDropper({ ...baseArgs, agentLoop: loop });
@@ -108,6 +108,34 @@ describe("V3 dropper agent", () => {
 		expect(systemPrompt).not.toContain("drop-resistance");
 		expect(systemPrompt).not.toContain("Pass strategy");
 		expect(systemPrompt).not.toContain("Urgency guidance");
+	});
+
+	it("keeps the legacy shouldStopAfterTurn turn cap for pi <=0.86", async () => {
+		let shouldStopAfterTurn: any;
+		const loop = fakeAgentLoop((_prompts, _context, config) => {
+			shouldStopAfterTurn = config.shouldStopAfterTurn;
+		});
+
+		await runDropper({ ...baseArgs, agentLoop: loop, maxTurns: 2 });
+
+		expect(shouldStopAfterTurn).toBeTypeOf("function");
+		expect(shouldStopAfterTurn({})).toBe(false);
+		expect(shouldStopAfterTurn({})).toBe(true);
+	});
+
+	it("uses finishTurn as the pi 0.87 turn cap without overriding hard exits", async () => {
+		let finishTurn: any;
+		const loop = fakeAgentLoop((_prompts, _context, config) => {
+			finishTurn = config.finishTurn;
+		});
+
+		await runDropper({ ...baseArgs, agentLoop: loop, maxTurns: 2 });
+
+		expect(finishTurn).toBeTypeOf("function");
+		expect(finishTurn({ message: { stopReason: "error" } })).toBeUndefined();
+		expect(finishTurn({ message: { stopReason: "aborted" } })).toBeUndefined();
+		expect(finishTurn({ message: { stopReason: "toolUse" } })).toBeUndefined();
+		expect(finishTurn({ message: { stopReason: "stop" } })).toEqual({ action: "end" });
 	});
 
 	it("passes budget-return max drops as a hard upper bound", async () => {

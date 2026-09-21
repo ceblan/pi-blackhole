@@ -40,7 +40,7 @@ describe("V3 reflector agent", () => {
 	it("keeps core reflector prompt guidance in V3 terms", async () => {
 		let systemPrompt = "";
 		const loop = fakeAgentLoop((_prompts, context) => {
-			systemPrompt = context.systemPrompt;
+			systemPrompt = context.messages[0]?.role === "system" ? context.messages[0].content : "";
 		});
 
 		await runReflector({ ...baseArgs, agentLoop: loop });
@@ -96,6 +96,34 @@ describe("V3 reflector agent", () => {
 		expect(systemPrompt).not.toContain("legacy/no-provenance");
 		expect(systemPrompt).not.toContain("pruner");
 		expect(systemPrompt).not.toContain("Pass strategy");
+	});
+
+	it("keeps the legacy shouldStopAfterTurn turn cap for pi <=0.86", async () => {
+		let shouldStopAfterTurn: any;
+		const loop = fakeAgentLoop((_prompts, _context, config) => {
+			shouldStopAfterTurn = config.shouldStopAfterTurn;
+		});
+
+		await runReflector({ ...baseArgs, agentLoop: loop, maxTurns: 2 });
+
+		expect(shouldStopAfterTurn).toBeTypeOf("function");
+		expect(shouldStopAfterTurn({})).toBe(false);
+		expect(shouldStopAfterTurn({})).toBe(true);
+	});
+
+	it("uses finishTurn as the pi 0.87 turn cap without overriding hard exits", async () => {
+		let finishTurn: any;
+		const loop = fakeAgentLoop((_prompts, _context, config) => {
+			finishTurn = config.finishTurn;
+		});
+
+		await runReflector({ ...baseArgs, agentLoop: loop, maxTurns: 2 });
+
+		expect(finishTurn).toBeTypeOf("function");
+		expect(finishTurn({ message: { stopReason: "error" } })).toBeUndefined();
+		expect(finishTurn({ message: { stopReason: "aborted" } })).toBeUndefined();
+		expect(finishTurn({ message: { stopReason: "toolUse" } })).toBeUndefined();
+		expect(finishTurn({ message: { stopReason: "stop" } })).toEqual({ action: "end" });
 	});
 
 	it("renders coverage tiers in every active observation line for the reflector", async () => {

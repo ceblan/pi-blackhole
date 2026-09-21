@@ -40,7 +40,12 @@ Prunes low-value observations from active memory when the pool exceeds `observat
 
 Each worker runs an `agentLoop` driven by a system prompt and a single record/drop tool. This section documents the three contracts — objective, inputs, tool schema, validation, edge cases, and shared loop mechanics.
 
-All three workers share the same loop configuration: `toolExecution: "sequential"`, `thinkingLevel: "low"` (default), `maxTurns` capped by the config's `agentMaxTurns` (default 16) via a `shouldStopAfterTurn` counter, and `maxTokens` bounded by `boundedMaxTokens(model, AGENT_LOOP_MAX_TOKENS)` where [[src/om/model-budget.ts]] `AGENT_LOOP_MAX_TOKENS = 32_000`. Record identity is a content hash (`hashId` in [[src/om/ids.ts]]), so identical content is deduplicated within and across calls.
+All three workers share the same loop configuration: `toolExecution: "sequential"`, `thinkingLevel: "low"` (default), `maxTurns` capped by the config's `agentMaxTurns` (default 16) via a dual turn-cap mechanism, and `maxTokens` bounded by `boundedMaxTokens(model, AGENT_LOOP_MAX_TOKENS)` where [[src/om/model-budget.ts]] `AGENT_LOOP_MAX_TOKENS = 32_000`. Record identity is a content hash (`hashId` in [[src/om/ids.ts]]), so identical content is deduplicated within and across calls.
+
+**Pi host compatibility (0.85–0.87)**: the loader of pi aliases every `@earendil-works/*` import of the extension to the host modules, so the workers always run against the host's `pi-agent-core`/`pi-ai` — the repo's pinned devDependencies only matter for type-checking. Two pi regressions are absorbed by dual mechanisms in each agent ([[src/om/agents/observer/agent.ts]], [[src/om/agents/reflector/agent.ts]], [[src/om/agents/dropper/agent.ts]]):
+
+- **System prompt** (pi 0.86.0 removed `AgentContext.systemPrompt`): each worker sets the legacy `systemPrompt` property *and* prepends the prompt as a leading `role: "system"` message in `context.messages`. Hosts ≤0.85 read the property and their providers drop the in-band system message; hosts ≥0.86 ignore the property and read the message (replayed by `normalizeContext`/`getCurrentSystemPrompt`).
+- **Turn cap** (pi 0.87.0 removed `shouldStopAfterTurn`): each worker provides both `shouldStopAfterTurn` (hosts ≤0.86) and `finishTurn` returning `{ action: "end" }` at the cap (pi ≥0.87). Only one callback runs per host, so they share the `turnCount` closure safely; error/aborted turns remain hard exits and count toward neither cap. Mirrors upstream [OM PR #83](https://github.com/elpapi42/pi-observational-memory/pull/83).
 
 ### Observer contract
 

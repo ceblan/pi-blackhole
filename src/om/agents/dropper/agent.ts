@@ -270,7 +270,16 @@ export async function runDropper(args: RunDropperArgs): Promise<string[] | undef
 
 	const userText = `CURRENT REFLECTIONS:\n${joinOrEmpty(reflections.map(reflectionToSummaryLine))}\n\n${existingObservationsContext}NEW OBSERVATIONS TO EVALUATE FOR DROPPING:\n${joinOrEmpty(observations.map((observation) => observationToDropperLine(observation, coverageTierForObservation(observation, coverageById))))}\n\nObservation pool pressure: ~${observationTokens.toLocaleString()} tokens; target budget: ~${budgetTokens.toLocaleString()} tokens; fullness: ~${fullnessPercent.toLocaleString()}%.\nDrop urgency: ${urgency}.\nMaximum drops allowed this run: ${maxDropsAllowed.toLocaleString()} observation${maxDropsAllowed === 1 ? "" : "s"}.\nThis maximum is a hard upper bound, not a target. Drop fewer or none if fewer observations are clearly safe.`;
 	const prompts: Message[] = [{ role: "user", content: [{ type: "text", text: userText }], timestamp: Date.now() }];
-	const context: AgentContext = { systemPrompt: DROPPER_SYSTEM, messages: [], tools: [dropObservations as AgentTool<any>] };
+	// Dual system-prompt delivery (pi 0.86+/0.87 compatibility, upstream OM issue #82):
+	// pi 0.86+ removed AgentContext.systemPrompt and reads the prompt from a leading
+	// transcript system message; hosts <=0.85 still read the legacy property and their
+	// providers drop unknown system messages, so both paths coexist safely.
+	const systemMessage = { role: "system", content: DROPPER_SYSTEM, timestamp: Date.now() } as unknown as Message;
+	const context: AgentContext = {
+		systemPrompt: DROPPER_SYSTEM,
+		messages: [systemMessage],
+		tools: [dropObservations as AgentTool<any>],
+	};
 	const reasoning = (model as { reasoning?: unknown }).reasoning;
 	const thinkingLevel = args.thinkingLevel ?? "low";
 	const effectiveMaxTurns = args.maxTurns && args.maxTurns > 0 ? args.maxTurns : undefined;
@@ -283,7 +292,19 @@ export async function runDropper(args: RunDropperArgs): Promise<string[] | undef
 		convertToLlm: (msgs) => msgs as Message[],
 		toolExecution: "sequential",
 		...(reasoning && thinkingLevel !== "off" ? { reasoning: thinkingLevel } : {}),
-		...(effectiveMaxTurns !== undefined ? { shouldStopAfterTurn: () => ++turnCount >= effectiveMaxTurns } : {}),
+		// Dual turn cap (pi 0.87 compatibility, upstream OM PR #83): hosts <=0.86
+		// read shouldStopAfterTurn, pi 0.87+ reads finishTurn with an {action:"end"}
+		// decision. Only one callback runs per host, so the counter is shared safely.
+		// Error/aborted turns stay hard exits and count toward neither cap.
+		...(effectiveMaxTurns !== undefined
+			? {
+				shouldStopAfterTurn: () => ++turnCount >= effectiveMaxTurns,
+				finishTurn: (turn: { message: { stopReason?: string } }) => {
+					if (turn.message.stopReason === "error" || turn.message.stopReason === "aborted") return undefined;
+					return ++turnCount >= effectiveMaxTurns ? ({ action: "end" } as const) : undefined;
+				},
+			}
+			: {}),
 	};
 
 	const loop = args.agentLoop ?? agentLoop;

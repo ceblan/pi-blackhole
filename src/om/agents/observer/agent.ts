@@ -115,7 +115,7 @@ export interface ObserverResult {
 	emptyReason?: ObserverEmptyReason;
 }
 
-export async function runObserver(args: RunObserverArgs): Promise<ObserverResult> {
+export async function runObserver(args: RunObserverArgs): Promise<ObserverResult> { // @lat: [[observational-memory#Agent prompts and contracts#Observer contract]]
 	const { model, apiKey, headers, priorReflections, priorObservations, chunk, allowedSourceEntryIds, signal } = args;
 	const conversation = chunk.trim();
 	if (!conversation) return { observations: undefined };

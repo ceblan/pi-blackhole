@@ -161,7 +161,7 @@ export function selectDropCandidates(
 		.map((candidate) => candidate.id);
 }
 
-export async function runDropper(args: RunDropperArgs): Promise<string[] | undefined> {
+export async function runDropper(args: RunDropperArgs): Promise<string[] | undefined> { // @lat: [[observational-memory#Agent prompts and contracts#Dropper contract]]
 	const { model, apiKey, headers, reflections, observations, budgetTokens, signal } = args;
 	if (observations.length === 0) return undefined;
 

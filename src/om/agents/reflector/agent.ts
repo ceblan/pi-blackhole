@@ -81,7 +81,7 @@ function normalizeReflectionContent(content: string): string | undefined {
 	return normalized;
 }
 
-export async function runReflector(args: RunReflectorArgs): Promise<Reflection[] | undefined> {
+export async function runReflector(args: RunReflectorArgs): Promise<Reflection[] | undefined> { // @lat: [[observational-memory#Agent prompts and contracts#Reflector contract]]
 	const { model, apiKey, headers, reflections, observations, signal } = args;
 	if (observations.length === 0) return undefined;
 

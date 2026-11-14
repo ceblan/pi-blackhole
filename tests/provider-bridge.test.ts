@@ -12,8 +12,31 @@
  * registered for api: claude-code-stream-json" via uncaughtException.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
 
 import { captureProviderApis, createBridgeStreamFn, scanRegistryProviders } from "../src/om/provider-stream.js";
+
+/**
+ * Load the REAL createProvider from the installed pi host (newest release),
+ * so the native-provider fixture is the exact object shape the host stores —
+ * not a hand-rolled guess. Skips those cases when no host install is found.
+ */
+async function loadHostCreateProvider(): Promise<((input: any) => any) | undefined> {
+	try {
+		const releases = join(process.env.HOME ?? "/home/carlos", ".pi/agent/install/releases");
+		const versions = readdirSync(releases).sort();
+		const latest = versions.at(-1);
+		if (!latest) return undefined;
+		const mod = (await import(
+			join(releases, latest, "node_modules/@earendil-works/pi-ai/dist/models.js"),
+		)) as any;
+		return typeof mod.createProvider === "function" ? mod.createProvider : undefined;
+	} catch {
+		return undefined;
+	}
+}
+const hostCreateProvider = await loadHostCreateProvider();
 
 const PROVIDER_STREAMS_KEY = Symbol.for("pi-blackhole:provider-streams");
 
@@ -29,11 +52,31 @@ describe("captureProviderApis", () => {
 		streams = new Map();
 	});
 
-	it("indexes a native provider (single api impl) by each model's api id", () => {
+	it("indexes a native provider (real host createProvider output) by each model's api id", ({ skip }) => {
+		// Built with the host's actual createProvider — the exact object shape the
+		// host stores for pi.registerProvider(provider) registrations: top-level
+		// stream/streamSimple dispatchers and NO .api property.
+		skip ||= !hostCreateProvider;
+		const provider = hostCreateProvider!({
+			id: "claude-code",
+			name: "Claude Code Subscription (Experimental)",
+			baseUrl: "process://claude-code",
+			models: [{ id: "sonnet", provider: "claude-code", api: "claude-code-stream-json" }],
+			api: {
+				stream: vi.fn(),
+				streamSimple: vi.fn(() => ({ result: () => Promise.resolve({}) })),
+			},
+		} as any);
+		captureProviderApis(streams, provider);
+		expect(streams.get("claude-code-stream-json")).toBe(provider.streamSimple);
+		expect(streams.size).toBe(1);
+	});
+
+	it("indexes a minimal native-shaped provider (top-level streamSimple, no .api)", () => {
 		const streamSimple = marker("native");
 		captureProviderApis(streams, {
 			id: "claude-code",
-			api: { stream: vi.fn(), streamSimple },
+			streamSimple,
 			getModels: () => [
 				{ id: "sonnet", provider: "claude-code", api: "claude-code-stream-json" },
 				{ id: "opus", provider: "claude-code", api: "claude-code-stream-json" },
@@ -41,6 +84,16 @@ describe("captureProviderApis", () => {
 		});
 		expect(streams.get("claude-code-stream-json")).toBe(streamSimple);
 		expect(streams.size).toBe(1);
+	});
+
+	it("indexes a createProvider-input-shaped object (api: { stream, streamSimple })", () => {
+		const streamSimple = marker("input-shape");
+		captureProviderApis(streams, {
+			id: "claude-code",
+			api: { stream: vi.fn(), streamSimple },
+			getModels: () => [{ id: "sonnet", api: "claude-code-stream-json" }],
+		});
+		expect(streams.get("claude-code-stream-json")).toBe(streamSimple);
 	});
 
 	it("indexes an api map provider by entry key", () => {
@@ -73,25 +126,23 @@ describe("captureProviderApis", () => {
 });
 
 describe("scanRegistryProviders", () => {
-	it("captures native and legacy providers through pi 1.5.2 public accessors", () => {
-		const nativeStream = marker("native");
+	it("captures native and legacy providers through pi 1.5.2 public accessors", ({ skip }) => {
+		skip ||= !hostCreateProvider;
+		const native = hostCreateProvider!({
+			id: "claude-code",
+			models: [{ id: "sonnet", provider: "claude-code", api: "claude-code-stream-json" }],
+			api: { stream: vi.fn(), streamSimple: vi.fn(() => ({ result: () => Promise.resolve({}) })) },
+		} as any);
 		const legacyStream = marker("legacy");
 		const registry = {
 			getRegisteredProviderIds: () => ["claude-code", "my-proxy"],
-			getRegisteredNativeProvider: (id: string) =>
-				id === "claude-code"
-					? {
-							id,
-							api: { stream: vi.fn(), streamSimple: nativeStream },
-							getModels: () => [{ id: "sonnet", api: "claude-code-stream-json" }],
-						}
-					: undefined,
+			getRegisteredNativeProvider: (id: string) => (id === "claude-code" ? native : undefined),
 			getRegisteredProviderConfig: (id: string) =>
 				id === "my-proxy" ? { api: "proxy-api", streamSimple: legacyStream } : undefined,
 		};
 		const streams = new Map<string, Function>();
 		scanRegistryProviders(streams, registry);
-		expect(streams.get("claude-code-stream-json")).toBe(nativeStream);
+		expect(streams.get("claude-code-stream-json")).toBe(native.streamSimple);
 		expect(streams.get("proxy-api")).toBe(legacyStream);
 	});
 
@@ -108,26 +159,28 @@ describe("createBridgeStreamFn end-to-end (crash regression)", () => {
 		delete (globalThis as any)[PROVIDER_STREAMS_KEY];
 	});
 
-	it("dispatches a claude-code session model to the captured stream instead of compat streamSimple", () => {
-		const captured = marker("claude-code-stream");
+	it("dispatches a claude-code session model to the captured stream instead of compat streamSimple", ({ skip }) => {
+		skip ||= !hostCreateProvider;
 		const compatStreamSimple = vi.fn(() => {
 			throw new Error("No API provider registered for api: claude-code-stream-json");
 		});
+		const innerStreamSimple = vi.fn(() => ({ result: () => Promise.resolve({}) }));
+		const native = hostCreateProvider!({
+			id: "claude-code",
+			models: [{ id: "sonnet", provider: "claude-code", api: "claude-code-stream-json" }],
+			api: { stream: vi.fn(), streamSimple: innerStreamSimple },
+		} as any);
 		const providerStreams = ((globalThis as any)[PROVIDER_STREAMS_KEY] ??= new Map());
 		// Simulate the agent_start scan against a pi 1.5.2-shaped registry.
 		scanRegistryProviders(providerStreams, {
 			getRegisteredProviderIds: () => ["claude-code"],
-			getRegisteredNativeProvider: () => ({
-				id: "claude-code",
-				api: { stream: vi.fn(), streamSimple: captured },
-				getModels: () => [{ id: "sonnet", provider: "claude-code", api: "claude-code-stream-json" }],
-			}),
+			getRegisteredNativeProvider: () => native,
 		});
 
 		const bridge = createBridgeStreamFn(compatStreamSimple);
 		const model = { provider: "claude-code", id: "sonnet", api: "claude-code-stream-json" };
 		expect(() => bridge(model, {}, {})).not.toThrow();
-		expect(captured).toHaveBeenCalledOnce();
+		expect(innerStreamSimple).toHaveBeenCalledOnce();
 		expect(compatStreamSimple).not.toHaveBeenCalled();
 	});
 

@@ -122,9 +122,9 @@ Guards against the pi 1.5.2 + pi-claude-code crash: `No API provider registered 
 
 ### Indexes every registration shape
 
-`captureProviderApis()` must index every registration shape the host accepts without clobbering existing entries.
+`captureProviderApis()` must index every provider shape the host stores, without clobbering existing entries.
 
-Covers native provider objects (single `{ stream, streamSimple }` implementation keyed by each model's `.api`), api-id-keyed implementation maps, and legacy name+config registrations (string api + top-level `streamSimple`), plus providers without usable implementations (ignored).
+The native fixture is built with the host's real `createProvider()` (loaded from the installed release, skipped when absent): its output exposes top-level `streamSimple` dispatching per model and NO `.api` property, so keys come from each model's `.api`. Also covers legacy name+config registrations (string api + top-level `streamSimple`) and input-shaped/api-map objects.
 
 ### Scans the host registry through public accessors
 

@@ -27,18 +27,34 @@ function modelsOf(provider: any): any[] {
 
 /**
  * Index a registered provider's streamSimple implementations into
- * `providerStreams`, keyed by api id. Handles every registration shape the
- * host accepts:
+ * `providerStreams`, keyed by api id. Handles every shape the host accepts:
  *
- * 1. Native provider object (`pi.registerProvider(provider)`, single argument —
- *    e.g. pi-claude-code): `provider.api` is `{ stream, streamSimple }`
- *    applying to every model, so keys come from each model's `.api` field.
- * 2. Api map: `provider.api` is `{ [apiId]: { stream, streamSimple } }`.
- * 3. Legacy config (`pi.registerProvider(name, config)`): `config.api` is an
+ * 1. `createProvider()` output — what native registrations (`pi.registerProvider(provider)`,
+ *    single argument, e.g. pi-claude-code) actually store: top-level
+ *    `streamSimple(model, context, options)` that dispatches per model, plus
+ *    `getModels()`/`getAllModels()` whose entries carry the `.api` id. The
+ *    object has NO `.api` property of its own.
+ * 2. Legacy config (`pi.registerProvider(name, config)`): `config.api` is an
  *    api-id string and `config.streamSimple` is the implementation.
+ * 3. createProvider()-input-shaped objects (`api: { stream, streamSimple }` or
+ *    an api-id-keyed map) — kept for robustness against future host shapes.
  */
 export function captureProviderApis(providerStreams: Map<string, Function>, provider: any): void {
 	if (!provider) return;
+	// Legacy config: string api id + top-level streamSimple.
+	if (typeof provider.api === "string") {
+		if (typeof provider.streamSimple === "function" && !providerStreams.has(provider.api)) {
+			providerStreams.set(provider.api, provider.streamSimple);
+		}
+		return;
+	}
+	// createProvider() output: top-level streamSimple dispatches per model.
+	if (typeof provider.streamSimple === "function") {
+		for (const model of modelsOf(provider)) {
+			if (model?.api && !providerStreams.has(model.api)) providerStreams.set(model.api, provider.streamSimple);
+		}
+		return;
+	}
 	const api = provider.api;
 	if (api && typeof api.streamSimple === "function") {
 		for (const model of modelsOf(provider)) {
@@ -52,10 +68,6 @@ export function captureProviderApis(providerStreams: Map<string, Function>, prov
 				providerStreams.set(apiId, impl.streamSimple);
 			}
 		}
-		return;
-	}
-	if (typeof api === "string" && typeof provider.streamSimple === "function" && !providerStreams.has(api)) {
-		providerStreams.set(api, provider.streamSimple);
 	}
 }
 

@@ -1,6 +1,6 @@
 # Tests
 
-pi-blackhole uses [Vitest](https://vitest.dev/) for testing. 50 test files cover all major subsystems: VCC compaction pipeline, observational memory, recall, commands, and configuration.
+pi-blackhole uses [Vitest](https://vitest.dev/) for testing. 52 test files cover all major subsystems: VCC compaction pipeline, observational memory, recall, commands, and configuration.
 
 ## VCC compaction tests
 
@@ -113,6 +113,30 @@ Tests for the three user-facing commands.
 - `tests/blackhole-command.test.ts` — `/blackhole` command (compact, configure, om-off/om-on)
 - `tests/memory-command.test.ts` — `/blackhole-memory` command (status, view, full)
 - `tests/blackhole-recall.test.ts` — `/blackhole-recall` command
+
+## Provider bridge capture
+
+Tests for the provider stream bridge that lets jiti-loaded OM agents use custom providers registered by other extensions. See [[architecture#Provider stream bridge]].
+
+Guards against the pi 1.5.2 + pi-claude-code crash: `No API provider registered for api: claude-code-stream-json` → uncaughtException → pi exits when the session model was a claude-code model and OM consolidation ran.
+
+### Indexes every registration shape
+
+`captureProviderApis()` must index every registration shape the host accepts without clobbering existing entries.
+
+Covers native provider objects (single `{ stream, streamSimple }` implementation keyed by each model's `.api`), api-id-keyed implementation maps, and legacy name+config registrations (string api + top-level `streamSimple`), plus providers without usable implementations (ignored).
+
+### Scans the host registry through public accessors
+
+`scanRegistryProviders()` must capture native and legacy providers from a pi 1.5.2-shaped model registry.
+
+Uses `getRegisteredProviderIds`/`getRegisteredNativeProvider`/`getRegisteredProviderConfig`, and is a no-op on registries lacking the accessors (old hosts, missing ctx).
+
+### Bridge dispatch regression
+
+After the agent_start scan, `createBridgeStreamFn()` must dispatch correctly per api id.
+
+A claude-code session model routes to the captured stream instead of compat `streamSimple` (which throws for unregistered custom apis); builtin-api models keep falling back to compat `streamSimple`.
 
 ## Configuration
 

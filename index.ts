@@ -16,52 +16,46 @@ import { registerVccRecallCommand } from "./src/commands/vcc-recall";
 import { registerConsolidationTrigger } from "./src/om/consolidation.js";
 import { registerCompactionTrigger } from "./src/om/compaction-trigger.js";
 import { registerRecallTool } from "./src/tools/recall";
+import { captureProviderApis, scanRegistryProviders } from "./src/om/provider-stream.js";
 import { Runtime } from "./src/om/runtime.js";
 
 export default (pi: ExtensionAPI) => {
 	// ── Bridge: capture custom provider stream functions for jiti-loaded agents ──
 	// pi-blackhole's consolidation agents are loaded via jiti with moduleCache: false,
 	// which creates a separate pi-ai instance whose apiProviderRegistry lacks custom
-	// providers (e.g., claude-bridge registered by other extensions). This bridge stores
+	// providers (e.g., claude-code registered by other extensions). This bridge stores
 	// streamSimple functions in a Symbol.for() global so agents can access them without
 	// going through pi-ai's registry.
 	//
-	// There are two mechanisms:
-	// 1. Wrap pi.registerProvider to capture streamSimple at registration time.
-	//    This handles providers registered AFTER our factory runs.
-	// 2. On agent_start, scan modelRegistry.registeredProviders for any providers
-	//    that registered BEFORE our factory ran (different extension load order).
+	// Providers reach the host in two shapes, and both must be captured
+	// (see captureProviderApis in provider-stream.ts): the native provider
+	// object (pi.registerProvider(provider), single argument — what pi-claude-code
+	// uses) and the legacy config (pi.registerProvider(name, config) with a string
+	// api id + top-level streamSimple).
+	//
+	// The registerProvider wrapper only sees calls made through pi-blackhole's own
+	// ExtensionAPI object — each extension gets its own instance — so the agent_start
+	// scan below is what captures other extensions' providers via the registry's
+	// public accessors (getRegisteredProviderIds/getRegisteredNativeProvider/
+	// getRegisteredProviderConfig; the old `registeredProviders` field no longer
+	// exists and native providers live in a separate private map).
 	const PROVIDER_STREAMS_KEY = Symbol.for("pi-blackhole:provider-streams");
 	const providerStreams: Map<string, Function> = (globalThis as any)[PROVIDER_STREAMS_KEY] ??= new Map();
 
 	const origRegisterProvider = pi.registerProvider.bind(pi);
-	pi.registerProvider = (name: string, config: any) => {
-		if (config && config.streamSimple && config.api) {
-			providerStreams.set(config.api, config.streamSimple);
-		}
-		origRegisterProvider(name, config);
+	(pi.registerProvider as any) = (nameOrProvider: any, config: any) => {
+		captureProviderApis(providerStreams, typeof nameOrProvider === "object" && nameOrProvider !== null ? nameOrProvider : config);
+		origRegisterProvider(nameOrProvider, config);
 	};
 
-	// Fallback: on agent_start, capture providers that registered before our wrapper
-	// (handles the case where pi-blackhole loads after another provider extension).
-	// Uses a dedicated flag instead of checking providerStreams.size so the scan
-	// always runs once even if the wrapper already captured some providers.
+	// Other extensions' registrations never pass through the wrapper above (separate
+	// ExtensionAPI instances). On the first agent_start — after all factories have run
+	// — scan the model registry through its public accessors and capture both shapes.
 	let hasScannedFallback = false;
 	pi.on("agent_start", (_event: unknown, ctx: any) => {
 		if (hasScannedFallback) return;
-		hasScannedFallback = true
-		// modelRegistry.registeredProviders is declared private in TypeScript but is a
-		// regular JS class field at runtime. We access it via bracket notation for
-		// future-proofing against potential #private migration.
-		const registry = (ctx as any)?.modelRegistry;
-		const registered: Map<string, any> | undefined = registry?.["registeredProviders"];
-		if (registered && typeof registered.forEach === "function") {
-			registered.forEach((config: any, _name: string) => {
-				if (config && config.streamSimple && config.api && !providerStreams.has(config.api)) {
-					providerStreams.set(config.api, config.streamSimple);
-				}
-			});
-		}
+		hasScannedFallback = true;
+		scanRegistryProviders(providerStreams, (ctx as any)?.modelRegistry);
 	});
 
 	scaffoldSettings();

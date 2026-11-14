@@ -77,7 +77,7 @@ The entry point factory sets up a provider stream bridge for jiti-loaded consoli
 
 Two capture strategies ensure all providers are available:
 
-1. **Wrap `pi.registerProvider`** — Intercepts registration calls, stores `streamSimple` in `Symbol.for("pi-blackhole:provider-streams")` global Map. Handles providers registered after pi-blackhole loads.
-2. **`agent_start` fallback scan** — On first agent start, scans `modelRegistry.registeredProviders` for providers that registered before pi-blackhole. Uses `hasScannedFallback` flag to run exactly once.
+1. **Wrap `pi.registerProvider`** — Intercepts registration calls through pi-blackhole's own ExtensionAPI object, stores `streamSimple` implementations in `Symbol.for("pi-blackhole:provider-streams")` global Map via `captureProviderApis()`. Each extension gets its own API instance, so this only sees pi-blackhole's own calls.
+2. **`agent_start` fallback scan** — On first agent start, `scanRegistryProviders()` walks the model registry's public accessors (`getRegisteredProviderIds()` + `getRegisteredNativeProvider()`/`getRegisteredProviderConfig()`) and captures providers registered by other extensions, in both the native-object and legacy-config shapes. Uses `hasScannedFallback` flag to run exactly once.
 
-The bridge is accessed via `createBridgeStreamFn()` in [[src/om/provider-stream.ts]].
+The bridge is accessed via `createBridgeStreamFn()` in [[src/om/provider-stream.ts]]. Covered by [[tests#Provider bridge capture]].

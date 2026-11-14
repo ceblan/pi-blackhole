@@ -192,14 +192,14 @@ Central OM runtime managing model resolution, consolidation lifecycle, cooldown 
 
 ## Provider stream bridge
 
-The extension's consolidation agents are loaded via `jiti` with `moduleCache: false`, creating a separate `pi-ai` instance whose `apiProviderRegistry` lacks custom providers registered by other extensions (e.g., `claude-bridge`).
+The extension's consolidation agents run via `jiti` with `moduleCache: false`, creating a separate `pi-ai` instance whose `apiProviderRegistry` lacks custom providers registered by other extensions (e.g., `claude-code`).
 
-The bridge solves this with two mechanisms:
+The host's main agent loop streams through provider dispatch, so custom providers like pi-claude-code (native form, never calls `registerApiProvider`) work for normal chat but break the compat `streamSimple` path the OM agents use. The bridge solves this with two mechanisms:
 
-1. **Wrap `pi.registerProvider`** — Captures `streamSimple` functions at registration time into a `Symbol.for("pi-blackhole:provider-streams")` global Map. Handles providers registered after pi-blackhole's factory runs.
-2. **`agent_start` scan** — On first agent start, scans `modelRegistry.registeredProviders` for providers that registered before pi-blackhole loaded. Uses `hasScannedFallback` flag to run once.
+1. **Wrap `pi.registerProvider`** — Captures `streamSimple` implementations at registration time into a `Symbol.for("pi-blackhole:provider-streams")` global Map. Each extension receives its own ExtensionAPI instance, so this wrapper only observes registrations made through pi-blackhole's own API object; it exists for completeness.
+2. **`agent_start` scan** — On first agent start, scans the model registry through its public accessors (`getRegisteredProviderIds()` + `getRegisteredNativeProvider()`/`getRegisteredProviderConfig()`) for providers registered by other extensions. This is the mechanism that matters in practice. An earlier version read a `registeredProviders` field that no longer exists on the host registry, leaving the map empty and crashing pi with `No API provider registered for api: claude-code-stream-json` (uncaughtException) whenever the session model was a claude-code model and OM consolidation ran.
 
-The `createBridgeStreamFn()` in [[src/om/provider-stream.ts]] lets jiti-loaded agents access these custom providers without going through pi-ai's registry.
+`captureProviderApis()` in [[src/om/provider-stream.ts]] indexes both registration shapes: the native provider object (`pi.registerProvider(provider)`, single argument — `api` is `{ stream, streamSimple }` keyed by each model's `.api`, or a map keyed by api id) and the legacy config (`pi.registerProvider(name, config)` with a string api id plus top-level `streamSimple`). The `createBridgeStreamFn()` in the same module lets jiti-loaded agents dispatch to these captured implementations instead of pi-ai's registry. Covered by [[tests#Provider bridge capture]].
 
 ## Upstream lineage
 
